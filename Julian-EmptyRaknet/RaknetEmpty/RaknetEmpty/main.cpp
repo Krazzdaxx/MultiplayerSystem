@@ -18,7 +18,9 @@ enum NetworkState
 	NS_PendingStart,
 	NS_Started,
 	NS_Lobby,
+	NS_ChooseClasses,
 	NS_Pending,
+	NS_GAMESTART,
 };
 
 bool isServer = false;
@@ -33,21 +35,21 @@ NetworkState g_networkState = NS_Init;
 enum {
 	ID_THEGAME_LOBBY_READY = ID_USER_PACKET_ENUM,
 	ID_PLAYER_READY,
+	ID_PLAYER_CLASS_SELECTED,
+	ID_PLAYER_DISPLAYSTATS,
 	ID_THEGAME_START,
-};
-
-enum EPlayerClass
-{
-	Mage = 0,
-	Rogue,
-	Cleric,
+	ID_THEGAME_CHOSENCLASS,
+	ID_THEGAME_DISPLAYSTATS,
 };
 
 struct SPlayer
 {
 	std::string m_name;
+	
+	std::string m_class;
+
 	unsigned int m_health;
-	EPlayerClass m_class;
+	unsigned int m_attack;
 
 	//function to send a packet with name/health/class etc
 	void SendName(RakNet::SystemAddress systemAddress, bool isBroadcast)
@@ -59,6 +61,24 @@ struct SPlayer
 
 		//returns 0 when something is wrong
 		assert(g_rakPeerInterface->Send(&writeBs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, systemAddress, isBroadcast));
+	}
+	void SendClass(RakNet::SystemAddress systemAddress, bool isBroadcast)
+	{
+		RakNet::BitStream writeBs;
+		writeBs.Write((RakNet::MessageID)ID_PLAYER_CLASS_SELECTED);
+		RakNet::RakString chosenClass(m_class.c_str());
+		writeBs.Write(chosenClass);
+
+		//returns 0 when something is wrong
+		assert(g_rakPeerInterface->Send(&writeBs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, systemAddress, isBroadcast));
+	}
+
+	void SendStats(RakNet::SystemAddress systemAddress, bool isBroadcast)
+	{
+		RakNet::BitStream writeBs;
+		writeBs.Write((RakNet::MessageID)ID_PLAYER_DISPLAYSTATS);
+		RakNet::RakString DisplayStats();
+		//writeBs.Write();
 	}
 };
 
@@ -113,6 +133,7 @@ void DisplayPlayerReady(RakNet::Packet* packet)
 	std::cout << userName.C_String() << " has joined" << std::endl;
 }
 
+
 void OnLobbyReady(RakNet::Packet* packet)
 {
 	RakNet::BitStream bs(packet->data, packet->length, false);
@@ -152,8 +173,74 @@ void OnLobbyReady(RakNet::Packet* packet)
 	RakNet::RakString name(player.m_name.c_str());
 	writeBs.Write(name);
 	assert(g_rakPeerInterface->Send(&writeBs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, packet->systemAddress, true));*/
-
+	
 }
+
+void ClassSelect(RakNet::Packet* packet)
+{
+	RakNet::BitStream bs(packet->data, packet->length, false);
+	RakNet::MessageID messageId;
+	bs.Read(messageId);
+	RakNet::RakString chosenClass;
+	bs.Read(chosenClass);
+
+	unsigned long guid = RakNet::RakNetGUID::ToUint32(packet->guid);
+	SPlayer& player = GetPlayer(packet->guid);
+	player.m_class = chosenClass;
+	
+
+	if (chosenClass == "Warrior")
+	{
+		player.m_health = 10;
+		player.m_attack = 3;
+	}
+	else if (chosenClass == "Mage")
+	{
+		player.m_health = 5;
+		player.m_attack = 5;
+	}
+	else if (chosenClass == "Rogue")
+	{
+		player.m_health = 7;
+		player.m_attack = 4;
+	}
+
+	std::cout << chosenClass.C_String() << " was chosen by " << player.m_name.c_str() << std::endl;
+	std::cout << player.m_name.c_str() << " has " << player.m_health << " health and " << player.m_attack << " attack" << std::endl;
+
+	for (std::map<unsigned long, SPlayer>::iterator it = m_players.begin(); it != m_players.end(); ++it)
+	{
+		if (guid == it->first)
+		{
+			player.SendClass(packet->systemAddress, false);
+		}
+		SPlayer& player = it->second;
+		player.SendClass(packet->systemAddress, true);
+	}
+}
+
+void DisplayStats(RakNet::Packet* packet)
+{
+	RakNet::BitStream bs(packet->data, packet->length, false);
+	unsigned long guid = RakNet::RakNetGUID::ToUint32(packet->guid);
+	SPlayer& player = GetPlayer(packet->guid);
+	RakNet::RakString displaystats;
+	bs.Write(displaystats);
+
+
+
+	for (std::map<unsigned long, SPlayer>::iterator it = m_players.begin(); it != m_players.end(); ++it)
+	{
+		if (guid == it->first)
+		{
+			player.SendStats(packet->systemAddress, true);
+		}
+		SPlayer& player = it->second;
+		player.SendStats(packet->systemAddress, false);
+	}
+	//std::cout << "Your Health is " << player.m_health << " and your attack is " << player.m_attack << std::endl;
+}
+
 
 unsigned char GetPacketIdentifier(RakNet::Packet *packet)
 {
@@ -200,8 +287,66 @@ void InputHandler()
 			//returns 0 when something is wrong
 			assert(g_rakPeerInterface->Send(&bs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, g_serverAddress, false));
 			g_networkState_mutex.lock();
-			g_networkState = NS_Pending;
+			g_networkState = NS_ChooseClasses;
 			g_networkState_mutex.unlock();
+		}
+		else if(g_networkState == NS_ChooseClasses)
+		{
+			bool haveChosenClass = false;
+			RakNet::RakString chosenClass;
+
+			std::cout << "Enter (w) for warrior, (m) for mage, and (r) for rogue." << std::endl;
+			std::cin >> userInput;
+
+			if (!haveChosenClass)
+			{
+				if (userInput[0] == 'w')
+				{
+					std::cout << "You chose warrior" << std::endl;
+					chosenClass = "Warrior";
+					haveChosenClass = true;
+				}
+				else if (userInput[0] == 'm')
+				{
+					std::cout << "You chose mage" << std::endl;
+					chosenClass = "Mage";
+					haveChosenClass = true;
+				}
+				else if (userInput[0] == 'r')
+				{
+					std::cout << "You chose rogue" << std::endl;
+					chosenClass = "Rogue";
+					haveChosenClass = true;
+				}
+				else
+				{
+					std::cout << "choose again" << std::endl;
+				}
+			}
+			if (chosenClass)
+			{
+				RakNet::BitStream bs;
+				bs.Write((RakNet::MessageID)ID_THEGAME_CHOSENCLASS);
+
+				bs.Write(chosenClass);
+
+				//returns 0 when something is wrong
+				assert(g_rakPeerInterface->Send(&bs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, g_serverAddress, false));
+				g_networkState_mutex.lock();
+				g_networkState = NS_GAMESTART;
+				g_networkState_mutex.unlock();
+			}
+		}
+		else if (g_networkState == NS_GAMESTART)
+		{
+			std::cout << "press c to see your characters stats." << std::endl;
+			std::cin >> userInput;
+			
+			if (userInput[0] == 'c')
+			{
+				RakNet::BitStream bs;
+				bs.Write((RakNet::MessageID)ID_THEGAME_DISPLAYSTATS);
+			}
 		}
 		else if (g_networkState == NS_Pending)
 		{
@@ -307,6 +452,12 @@ void PacketHandler()
 					break;
 				case ID_PLAYER_READY:
 					DisplayPlayerReady(packet);
+					break;
+				case ID_THEGAME_CHOSENCLASS:
+					ClassSelect(packet);
+					break;
+				case ID_THEGAME_DISPLAYSTATS:
+					DisplayStats(packet);
 					break;
 				default:
 					break;
